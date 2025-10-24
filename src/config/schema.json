@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["workbook"],
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "overwrite": { "type": "boolean", "default": true },
+        "insertTargetPlacement": { "type": "string", "enum": ["insertAfterSource", "appendToSheetEnd"], "default": "insertAfterSource" },
+        "srcLang": { "type": "string" },
+        "targetLocale": { "type": "string" },
+        "exportComments": { "type": "boolean", "default": false }
+      },
+      "additionalProperties": true
+    },
+    "segmentation": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true },
+        "rules": {
+          "oneOf": [
+            { "type": "string", "enum": ["builtin"] },
+            { "type": "object", "properties": { "srxPath": { "type": "string" } }, "required": ["srxPath"], "additionalProperties": false }
+          ],
+          "default": "builtin"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workbook": {
+      "type": "object",
+      "required": ["sheets"],
+      "properties": {
+        "sheets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["namePattern", "sourceColumns"],
+            "properties": {
+              "namePattern": { "type": "string" },
+              "sourceColumns": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1,
+                "uniqueItems": true
+              },
+              "targetColumns": {
+                "type": "object",
+                "additionalProperties": { "type": "string" }
+              },
+              "createTargetIfMissing": { "type": "boolean", "default": true },
+              "headerRow": { "type": "integer", "minimum": 1, "default": 1 },
+              "valuesStartRow": { "type": "integer", "minimum": 1, "default": 2 },
+              "skipHiddenRows": { "type": "boolean", "default": true },
+              "skipHiddenColumns": { "type": "boolean", "default": true },
+              "excludeColors": { "type": "array", "items": { "type": "string" } },
+              "extractFormulaResults": { "type": "boolean", "default": true },
+              "preserveStyles": { "type": "boolean", "default": true },
+              "translateComments": { "type": "boolean", "default": false },
+              "treatMergedRegions": { "type": "string", "enum": ["top-left", "expand", "skip"], "default": "top-left" },
+              "maxCharsPerTarget": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 1 } },
+              "metadataRows": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+              "excludedRows": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+              "excludedColumns": { "type": "array", "items": { "type": "string" } },
+              "inlineCodeRegexes": { "type": "array", "items": { "type": "string" } },
+              "sourceLocale": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

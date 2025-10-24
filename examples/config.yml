@@ -1,0 +1,31 @@
+global:
+  srcLang: en
+  overwrite: true
+  insertTargetPlacement: insertAfterSource
+
+segmentation:
+  enabled: true
+  rules:
+    srxPath: ./examples/default_rules.srx
+
+workbook:
+  sheets:
+    - namePattern: "Sheet1"
+      sourceColumns: ["A"]
+      targetColumns:
+        fr: "B"
+        de: "C"
+      html: 
+        enabled: true
+        translatableTags: ['title']  
+      createTargetIfMissing: true
+      headerRow: 1
+      valuesStartRow: 2
+      skipHiddenRows: true
+      skipHiddenColumns: true
+      excludeColors: ["#00FF00"]
+      extractFormulaResults: true
+      preserveStyles: true
+      treatMergedRegions: top-left
+      inlineCodeRegexes: ["\\{\\d+\\}", "%s"]
+      sourceLocale: en
