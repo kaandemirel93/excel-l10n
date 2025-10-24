@@ -45,3 +45,6 @@ pids
 
 # Yarn Integrity file
 .yarn-integrity
+
+# Test folders
+.out/
