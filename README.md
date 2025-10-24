@@ -202,3 +202,7 @@ excel-l10n extract -c config.yml -i huge.xlsx -o huge.xlf --stream
 ```
 
 Note: the current release exposes the streaming flag and API; subsequent versions will wire a true streaming reader under the hood for constant-memory processing.
+
+License: Polyform Noncommercial 1.0.0
+For personal and non-commercial use only.
+Commercial licensing inquiries: kaandemirel@yahoo.com
