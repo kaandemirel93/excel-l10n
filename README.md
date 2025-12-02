@@ -2,30 +2,54 @@
 
 A configurable Excel (XLSX) extraction → segmentation → XLIFF/JSON export → merge tool for modern JS workflows. Inspired by Okapi's OpenXML filter, with native support for multi-lingual target columns per sheet and rich Excel filter options via a simple JSON/YAML configuration.
 
-## Quick start
+## Installation
 
 ```bash
-# install deps
-npm install
+# As a dependency in your project
+npm install excel-l10n
 
-# build
-npm run build
-
-# extract to XLIFF (uses SRX if enabled in config)
-dist/cli/index.js extract -c examples/config.yml -i examples/sample.xlsx -o out.xlf --src-lang en
-
-# extract to XLIFF 1.2 (default is 2.1)
-dist/cli/index.js extract -c examples/config.yml -i examples/sample.xlsx -o out.xlf --src-lang en --xliff-version 1.2
-
-# merge translated file
-dist/cli/index.js merge -c examples/config.yml -i examples/sample.xlsx -t out.translated.xlf -o examples/sample.translated.xlsx
+# Or globally for CLI usage
+npm install -g excel-l10n
 ```
 
-## CLI
+## Quick Start
 
-- `excel-l10n extract -c config.yml -i workbook.xlsx -o out.xlf`
-- `excel-l10n extract -c config.yml -i workbook.xlsx -o out.json --format json`
-- `excel-l10n merge -c config.yml -i workbook.xlsx -t translated.xlf -o workbook.translated.xlsx`
+### CLI Usage
+
+```bash
+# Extract to XLIFF (uses SRX segmentation if enabled in config)
+excel-l10n extract -c config.yml -i workbook.xlsx -o out.xlf --src-lang en
+
+# Extract to XLIFF 1.2 (default is 2.1)
+excel-l10n extract -c config.yml -i workbook.xlsx -o out.xlf --src-lang en --xliff-version 1.2
+
+# Extract to JSON
+excel-l10n extract -c config.yml -i workbook.xlsx -o out.json --format json
+
+# Merge translated file back
+excel-l10n merge -c config.yml -i workbook.xlsx -t translated.xlf -o workbook.translated.xlsx
+```
+
+### Programmatic Usage
+
+```typescript
+import { parseConfig, extract, exportUnitsToXliff, parseTranslated, merge } from 'excel-l10n';
+
+// Load configuration
+const config = parseConfig('config.yml');
+
+// Extract translatable content
+const units = await extract('workbook.xlsx', config);
+
+// Export to XLIFF
+const xliff = await exportUnitsToXliff(units, config, { srcLang: 'en' });
+
+// After translation, parse and merge back
+const translated = parseTranslated(xliff, 'xlf');
+await merge('workbook.xlsx', 'workbook.translated.xlsx', translated, config);
+```
+
+## CLI Commands
 
 Advanced:
 
@@ -61,19 +85,93 @@ excel-l10n extract -i in.xlsx --sheet "Sheet1" --source A --target fr=B,de=C -o 
 
 Run `excel-l10n --help` for details.
 
-## Programmatic API
+## API Reference
 
-```ts
-import { parseConfig, extract, exportUnitsToXliff, exportUnitsToJson, parseTranslated, merge } from 'excel-l10n';
+### Core Functions
 
-const cfg = parseConfig('examples/config.yml');
-const units = await extract('examples/sample.xlsx', cfg);
-const xlf = await exportUnitsToXliff(units, cfg, { srcLang: 'en' });
-const json = await exportUnitsToJson(units, cfg, { fileName: 'sample.xlsx' });
+```typescript
+// Configuration
+parseConfig(pathOrObject: string | Config): Config
 
-// translate, then merge
-const translatedUnits = parseTranslated(xlf, 'xlf');
-await merge('examples/sample.xlsx', 'examples/sample.translated.xlsx', translatedUnits, cfg);
+// Extraction
+extract(xlsxPath: string, config: Config): Promise<TranslationUnit[]>
+
+// Export
+exportUnitsToXliff(units: TranslationUnit[], config: Config, options?: {
+  srcLang?: string;
+  trgLang?: string;
+  generator?: string;
+}): Promise<string>
+
+exportUnitsToJson(units: TranslationUnit[], config: Config, options?: {
+  fileName?: string;
+}): Promise<string>
+
+// Parsing
+parseTranslated(content: string, format: 'xlf' | 'json'): TranslationUnit[]
+
+// Merging
+merge(
+  inputXlsxPath: string,
+  outputXlsxPath: string,
+  translatedUnits: TranslationUnit[],
+  config: Config
+): Promise<void>
+```
+
+## Using as a Library
+
+When using `excel-l10n` as a dependency in your project:
+
+```typescript
+import { parseConfig, extract, exportUnitsToXliff, merge } from 'excel-l10n';
+import path from 'path';
+
+async function localizeWorkbook() {
+  // Option 1: Load config from file
+  const config = parseConfig('./localization-config.yml');
+  
+  // Option 2: Create config programmatically
+  const config = {
+    workbook: {
+      sheets: [{
+        namePattern: 'Sheet1',
+        sourceColumns: ['B'],
+        targetColumns: { fr: 'C', de: 'D' },
+        html: { enabled: true },
+        headerRow: 1,
+        valuesStartRow: 2
+      }]
+    },
+    global: {
+      srcLang: 'en',
+      xliffVersion: '2.1'
+    }
+  };
+  
+  // Extract
+  const units = await extract('./input.xlsx', config);
+  console.log(`Extracted ${units.length} translation units`);
+  
+  // Export to XLIFF
+  const xliff = await exportUnitsToXliff(units, config, { srcLang: 'en' });
+  
+  // ... send to translation service ...
+  
+  // Parse translated XLIFF
+  const translated = parseTranslated(xliff, 'xlf');
+  
+  // Merge back to Excel
+  await merge('./input.xlsx', './output.xlsx', translated, config);
+}
+```
+
+### TypeScript Support
+
+Full TypeScript definitions are included. Import types as needed:
+
+```typescript
+import type { Config, TranslationUnit, Segment } from 'excel-l10n';
 ```
 
 ## Segmentation (SRX)

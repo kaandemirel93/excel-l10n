@@ -10,9 +10,9 @@ let schema: any;
   const candidates = [
     // running from project root (ts-jest)
     path.resolve(process.cwd(), 'src/config/schema.json'),
-    // running from built dist
+    // running from built dist in project
     path.resolve(process.cwd(), 'dist/config/schema.json'),
-    // relative to this file via heuristic: go up one from types import
+    // relative to cwd/config
     path.resolve(process.cwd(), 'config/schema.json'),
   ];
   for (const p of candidates) {
