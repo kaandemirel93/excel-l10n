@@ -100,6 +100,132 @@ export async function htmlToSkeleton(html: string, opts?: { translatableTags?: s
   return { skeleton, texts, inlineMap };
 }
 
+// Hybrid approach: Convert HTML to XLIFF inline elements for inline tags, preserve block tags in skeleton
+export async function htmlToXliffWithSkeleton(html: string, opts?: { translatableTags?: string[]; xliffVersion?: '1.2' | '2.1' }): Promise<{
+  skeleton: string;
+  xliffSource: string;
+  inlineMap?: Record<number, { open: string; close: string }>; // Only for XLIFF 1.2
+}> {
+  const { parse } = await import('node-html-parser');
+  const root = parse(String(html), { lowerCaseTagName: false });
+  const defaultInline = ['b', 'strong', 'i', 'em', 'u', 'span', 'small', 'sub', 'sup', 'mark', 'a', 'code'];
+  const configured = (opts?.translatableTags || []).map(t => String(t).toLowerCase());
+  const inlineTags = new Set<string>([...defaultInline, ...configured]);
+  const version = opts?.xliffVersion || '2.1';
+  let inlineIdCounter = 1;
+  const inlineMap: Record<number, { open: string; close: string }> = {}; // Only used for XLIFF 1.2
+
+  // Map HTML tag names to XLIFF ctype values for XLIFF 1.2
+  const ctypeMap: Record<string, string> = {
+    'b': 'bold',
+    'strong': 'bold',
+    'i': 'italic',
+    'em': 'italic',
+    'u': 'underline',
+    'a': 'link',
+    'code': 'code',
+    'span': 'x-span',
+    'small': 'x-small',
+    'sub': 'x-sub',
+    'sup': 'x-sup',
+    'mark': 'x-mark',
+  };
+
+  // Process node and generate both skeleton and XLIFF source
+  function processNode(node: any, isInsideBlock: boolean = false): { skeleton: string; xliff: string } {
+    if (!node) return { skeleton: '', xliff: '' };
+
+    // Text node
+    if (node.nodeType === 3) {
+      const text = String(node.rawText ?? '');
+      return { skeleton: '', xliff: text };
+    }
+
+    // Element node
+    if (node.nodeType === 1) {
+      const tag = String(node.tagName || '').toLowerCase();
+
+      // Process inline tags as XLIFF inline elements
+      if (inlineTags.has(tag)) {
+        const id = inlineIdCounter++;
+        const rawAttrs = node.rawAttrs ? ` ${node.rawAttrs}` : '';
+        
+        let xliffInner = '';
+        if (node.childNodes) {
+          for (const child of node.childNodes) {
+            const result = processNode(child, isInsideBlock);
+            xliffInner += result.xliff;
+          }
+        }
+        
+        let xliffOut = '';
+        if (version === '2.1') {
+          // XLIFF 2.1: use <pc> elements with equivStart/equivEnd to preserve original HTML
+          const dataRef = tag;
+          const equivStart = `&lt;${tag}${rawAttrs.replace(/"/g, '&quot;')}&gt;`;
+          const equivEnd = `&lt;/${tag}&gt;`;
+          xliffOut = `<pc id="${id}" dataRef="html_${dataRef}" equivStart="${equivStart}" equivEnd="${equivEnd}">${xliffInner}</pc>`;
+        } else {
+          // XLIFF 1.2: use <g> elements with ctype
+          // Store original tags in inline map for 1.2
+          inlineMap[id] = { 
+            open: `<${tag}${rawAttrs}>`, 
+            close: `</${tag}>` 
+          };
+          const ctype = ctypeMap[tag] || `x-${tag}`;
+          xliffOut = `<g id="${id}" ctype="${ctype}">${xliffInner}</g>`;
+        }
+
+        // Inline tags don't appear in skeleton - they're part of the content
+        return { skeleton: '', xliff: xliffOut };
+      }
+
+      // Block-level tags: preserve in skeleton
+      const rawAttrs = node.rawAttrs ? ` ${node.rawAttrs}` : '';
+      let skeletonOut = '';
+      let xliffOut = '';
+      
+      if (node.childNodes) {
+        for (const child of node.childNodes) {
+          const result = processNode(child, true);
+          skeletonOut += result.skeleton;
+          xliffOut += result.xliff;
+        }
+      }
+      
+      if (tag) {
+        // If there's a nested skeleton, preserve it; otherwise use [[CONTENT]] placeholder
+        const innerSkeleton = skeletonOut || '[[CONTENT]]';
+        return { skeleton: `<${tag}${rawAttrs}>${innerSkeleton}</${tag}>`, xliff: xliffOut };
+      }
+
+      // No tag (e.g., root wrapper node) - pass through children's skeleton
+      return { skeleton: skeletonOut, xliff: xliffOut };
+    }
+
+    // Other node types (like root wrapper): recurse through children
+    let skeletonOut = '';
+    let xliffOut = '';
+    if (node.childNodes) {
+      for (const child of node.childNodes) {
+        const result = processNode(child, isInsideBlock);
+        skeletonOut += result.skeleton;
+        xliffOut += result.xliff;
+      }
+    }
+
+    return { skeleton: skeletonOut, xliff: xliffOut };
+  }
+
+  const result = processNode(root);
+  // Only return inlineMap for XLIFF 1.2 (XLIFF 2.1 uses equivStart/equivEnd)
+  return { 
+    skeleton: result.skeleton, 
+    xliffSource: result.xliff, 
+    inlineMap: version === '1.2' && Object.keys(inlineMap).length > 0 ? inlineMap : undefined 
+  };
+}
+
 // Convert HTML to XLIFF inline elements (XLIFF 2.1 <pc> or XLIFF 1.2 <g>)
 export async function htmlToXliffInline(html: string, opts?: { translatableTags?: string[]; xliffVersion?: '1.2' | '2.1' }): Promise<string> {
   const { parse } = await import('node-html-parser');
@@ -312,14 +438,22 @@ export async function extractUnits(inputXlsxPath: string, config: Config): Promi
             const transTags = (sheetCfg as any).html?.translatableTags as string[] | undefined;
             const xliffVersion = config.global?.xliffVersion || '2.1';
 
-            // Convert HTML to XLIFF inline elements directly
-            text = await htmlToXliffInline(originalHtml, {
+            // Use hybrid approach: XLIFF inline elements for inline tags, skeleton for block tags
+            const { skeleton, xliffSource, inlineMap } = await htmlToXliffWithSkeleton(originalHtml, {
               translatableTags: transTags,
               xliffVersion
             });
 
-            // Store original HTML for reference
+            // Store skeleton for reconstruction during merge
+            meta.htmlSkeleton = skeleton;
+            // Only store inlineMap for XLIFF 1.2 (2.1 uses equivStart/equivEnd in the XLIFF itself)
+            if (inlineMap) {
+              meta.htmlInlineMap = inlineMap;
+            }
             meta.htmlOriginal = originalHtml;
+
+            // The translatable text is the XLIFF source with inline elements
+            text = xliffSource;
           }
 
           if (!htmlDetected && text === '') continue; // skip empty when not HTML; when HTML with zero texts, keep TU with skeleton

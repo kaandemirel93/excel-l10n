@@ -11,10 +11,10 @@ segmentation:
 workbook:
   sheets:
     - namePattern: "Sheet1"
-      sourceColumns: ["A"]
+      sourceColumns: ["B"]
       targetColumns:
-        fr: "B"
-        de: "C"
+        fr: "D"
+        de: "E"
       html: 
         enabled: true
         translatableTags: ['title']  

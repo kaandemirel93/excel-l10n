@@ -43,39 +43,81 @@ function writeWithPh(parent: any, encoded: string) {
 
   // Check if the text already contains XLIFF inline elements (<pc>, <g>, etc.)
   if (/<(pc|g|sc|ec|bx|ex|bpt|ept)\s/.test(parts)) {
-    // Parse and manually build inline XLIFF elements
-    const xmlPattern = /<(pc|g|sc|ec|bx|ex|bpt|ept)([^>]*)>(.*?)<\/(pc|g|sc|ec|bx|ex|bpt|ept)>|<(pc|g|sc|ec|bx|ex|bpt|ept)([^>]*)\/>/g;
-    let lastIndex = 0;
-    let match;
-
-    while ((match = xmlPattern.exec(parts)) !== null) {
-      // Write any text before this element
-      const textBefore = parts.substring(lastIndex, match.index);
-      if (textBefore) parent.txt(textBefore);
-
-      if (match[1]) {
-        // Paired element like <pc ...>content</pc>
-        const tagName = match[1];
-        const attrs = match[2];
-        const innerContent = match[3];
-        const attrObj = parseAttributes(attrs);
-        const elem = parent.ele(tagName, attrObj);
-        // Recursively handle inner content
-        writeWithPh(elem, innerContent);
-      } else if (match[5]) {
-        // Self-closing element like <sc ... />
-        const tagName = match[5];
-        const attrs = match[6];
-        const attrObj = parseAttributes(attrs);
-        parent.ele(tagName, attrObj);
+    // Parse inline XLIFF elements properly, handling nesting
+    let i = 0;
+    while (i < parts.length) {
+      // Look for next opening tag
+      const tagSearch = parts.substring(i).match(/<(pc|g|sc|ec|bx|ex|bpt|ept)(\s[^>]*)?>/);
+      
+      if (!tagSearch) {
+        // No more tags, write remaining text
+        const remaining = parts.substring(i);
+        if (remaining) parent.txt(remaining);
+        break;
       }
-
-      lastIndex = match.index + match[0].length;
+      
+      const matchStart = i + (tagSearch.index || 0);
+      
+      // Write any text before this tag
+      if (matchStart > i) {
+        parent.txt(parts.substring(i, matchStart));
+      }
+      
+      const tagName = tagSearch[1];
+      const attrsStr = tagSearch[2] || '';
+      const selfClosing = attrsStr.trim().endsWith('/');
+      
+      i = matchStart + tagSearch[0].length;
+      
+      if (selfClosing) {
+        // Self-closing tag
+        const attrObj = parseAttributes(attrsStr);
+        parent.ele(tagName, attrObj);
+        continue;
+      }
+      
+      // Find matching closing tag, handling nesting
+      const closeTag = `</${tagName}>`;
+      let depth = 1;
+      let contentStart = i;
+      let j = i;
+      
+      while (j < parts.length && depth > 0) {
+        const nextOpen = parts.indexOf(`<${tagName}`, j);
+        const nextClose = parts.indexOf(closeTag, j);
+        
+        if (nextClose === -1) {
+          // No closing tag found
+          break;
+        }
+        
+        if (nextOpen !== -1 && nextOpen < nextClose) {
+          // Found nested opening tag
+          depth++;
+          j = nextOpen + tagName.length + 1;
+        } else {
+          // Found closing tag
+          depth--;
+          if (depth === 0) {
+            // This is our closing tag
+            const innerContent = parts.substring(contentStart, nextClose);
+            const attrObj = parseAttributes(attrsStr);
+            const elem = parent.ele(tagName, attrObj);
+            // Recursively handle inner content
+            writeWithPh(elem, innerContent);
+            i = nextClose + closeTag.length;
+            break;
+          }
+          j = nextClose + closeTag.length;
+        }
+      }
+      
+      if (depth > 0) {
+        // Unclosed tag, treat as text
+        parent.txt(parts.substring(matchStart));
+        break;
+      }
     }
-
-    // Write any remaining text
-    const textAfter = parts.substring(lastIndex);
-    if (textAfter) parent.txt(textAfter);
     return;
   }
 
@@ -125,7 +167,16 @@ export async function exportToXliff(units: TranslationUnit[], config: Config, op
       if (u.meta?.metadataRows) notes.ele('note', { category: 'metadataRows' }).txt(JSON.stringify(u.meta.metadataRows));
       if (u.meta?.comments) notes.ele('note', { category: 'comments' }).txt(typeof u.meta.comments === 'string' ? u.meta.comments : JSON.stringify(u.meta.comments));
     }
-    // htmlSkeleton and htmlInlineMap are deprecated; XLIFF inline elements are now in source text directly
+    // Export HTML skeleton and inline map for reconstruction during merge
+    if (u.meta?.htmlSkeleton) {
+      notes.ele('note', { category: 'htmlSkeleton' }).txt(String(u.meta.htmlSkeleton));
+    }
+    if (u.meta?.htmlInlineMap) {
+      notes.ele('note', { category: 'htmlInlineMap' }).txt(JSON.stringify(u.meta.htmlInlineMap));
+    }
+    if (u.meta?.htmlTexts) {
+      notes.ele('note', { category: 'htmlTexts' }).txt(JSON.stringify(u.meta.htmlTexts));
+    }
 
     const segs = u.segments && u.segments.length ? u.segments : [{ id: `${u.id}_s0`, source: u.source } as Segment];
     // collect placeholder map for this unit
@@ -134,10 +185,10 @@ export async function exportToXliff(units: TranslationUnit[], config: Config, op
       const seg = unit.ele('segment', { id: s.id });
       const { encoded, map } = encodePlaceholders(s.source, regs);
       phMap[s.id] = map;
-      const src = seg.ele('source');
+      const src = seg.ele('source').att('xml:space', 'preserve');
       writeWithPh(src, encoded);
       if (s.target != null) {
-        const tgt = seg.ele('target');
+        const tgt = seg.ele('target').att('xml:space', 'preserve');
         writeWithPh(tgt, s.target);
       }
     }
@@ -146,10 +197,13 @@ export async function exportToXliff(units: TranslationUnit[], config: Config, op
     }
   }
 
-  return root.end({ prettyPrint: true });
+  // Disable pretty printing to ensure whitespace around inline tags is preserved exactly as is.
+  // Pretty printing often adds newlines/indentation in mixed content (e.g. <source>text <pc>...</pc></source>)
+  // which can introduce unwanted spaces or break words.
+  return root.end({ prettyPrint: false });
 }
 
-function extractNotes(u: any): { sheetName: string; row: number; col: string; ph?: Record<string, Record<string, string>>; htmlSkeleton?: string; htmlInlineMap?: Record<string, { open: string; close: string }>; htmlTexts?: string[] } {
+function extractNotes(notesArray: any): { sheetName: string; row: number; col: string; ph?: Record<string, Record<string, string>>; htmlSkeleton?: string; htmlInlineMap?: Record<string, { open: string; close: string }>; htmlTexts?: string[] } {
   let sheetName = '';
   let row = 0;
   let col = '';
@@ -157,22 +211,47 @@ function extractNotes(u: any): { sheetName: string; row: number; col: string; ph
   let htmlSkeleton: string | undefined;
   let htmlInlineMap: Record<string, { open: string; close: string }> | undefined;
   let htmlTexts: string[] | undefined;
-  const notes = u.notes?.note;
-  const notesArr = Array.isArray(notes) ? notes : (notes ? [notes] : []);
-  for (const n of notesArr) {
-    if (typeof n === 'string') {
-      const m = /sheet=(.*?);row=(\d+);col=([A-Z]+)/.exec(n);
-      if (m) { sheetName = m[1]; row = parseInt(m[2], 10); col = m[3]; }
-    } else if (typeof n === 'object' && n.category === 'ph' && typeof n['#text'] === 'string') {
-      try { ph = JSON.parse(n['#text']); } catch { /* ignore */ }
-    } else if (typeof n === 'object' && n.category === 'htmlSkeleton' && typeof n['#text'] === 'string') {
-      htmlSkeleton = n['#text'];
-    } else if (typeof n === 'object' && n.category === 'htmlInlineMap' && typeof n['#text'] === 'string') {
-      try { htmlInlineMap = JSON.parse(n['#text']); } catch { /* ignore */ }
-    } else if (typeof n === 'object' && n.category === 'htmlTexts' && typeof n['#text'] === 'string') {
-      try { htmlTexts = JSON.parse(n['#text']); } catch { /* ignore */ }
+  
+  // With preserveOrder: true, notesArray is an array of objects
+  if (!Array.isArray(notesArray)) return { sheetName, row, col, ph, htmlSkeleton, htmlInlineMap, htmlTexts };
+  
+  for (const item of notesArray) {
+    if (item.note) {
+      // item.note is an array
+      const noteArray = Array.isArray(item.note) ? item.note : [item.note];
+      
+      // Get category from item's attributes (at same level as 'note')
+      let category = '';
+      if (item[':@']) {
+        const attrs = item[':@'];
+        category = attrs['@_category'] || attrs.category || '';
+      }
+      
+      // Get text from note array
+      let text = '';
+      for (const n of noteArray) {
+        if (n['#text']) {
+          text = n['#text'];
+          break;
+        }
+      }
+      
+      if (!category && text) {
+        // Plain note without category - check for sheet/row/col pattern
+        const m = /sheet=(.*?);row=(\d+);col=([A-Z]+)/.exec(text);
+        if (m) { sheetName = m[1]; row = parseInt(m[2], 10); col = m[3]; }
+      } else if (category === 'ph' && text) {
+        try { ph = JSON.parse(text); } catch { /* ignore */ }
+      } else if (category === 'htmlSkeleton' && text) {
+        htmlSkeleton = text;
+      } else if (category === 'htmlInlineMap' && text) {
+        try { htmlInlineMap = JSON.parse(text); } catch { /* ignore */ }
+      } else if (category === 'htmlTexts' && text) {
+        try { htmlTexts = JSON.parse(text); } catch { /* ignore */ }
+      }
     }
   }
+  
   return { sheetName, row, col, ph, htmlSkeleton, htmlInlineMap, htmlTexts };
 }
 
@@ -197,54 +276,101 @@ function flattenText(node: any): string {
 }
 
 export function parseXliffToUnits(xlf: string): TranslationUnit[] {
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '', preserveOrder: false, trimValues: false });
+  // Use preserveOrder: true to maintain the order of mixed content (text and inline elements)
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '', preserveOrder: true, trimValues: false });
   const obj: any = parser.parse(xlf);
   const units: TranslationUnit[] = [];
-  const xliff = obj.xliff;
+
+  // With preserveOrder: true, the structure is an array of objects with single keys
+  // Find the xliff element
+  const xliffArray = obj;
+  let xliff: any = null;
+  for (const item of xliffArray) {
+    if (item.xliff) {
+      xliff = item.xliff;
+      break;
+    }
+  }
+
   if (!xliff) return units;
-  const files = Array.isArray(xliff.file) ? xliff.file : [xliff.file];
-  const xliffTrg = xliff.trgLang as string | undefined;
+
+  // Extract xliff attributes
+  let xliffTrg = '';
+  for (const item of xliffArray) {
+    if (item.xliff && item[':@']) {
+      const attrs = item[':@'];
+      xliffTrg = attrs['@_trgLang'] || attrs.trgLang || '';
+    }
+  }
+
+  // Find file elements
+  const files: any[] = [];
+  for (const item of xliff) {
+    if (item.file) {
+      files.push(item.file);
+    }
+  }
 
   // Flatten text with <ph id> and XLIFF inline elements recursively
-  const flatten = (node: any): string => {
-    if (node == null) return '';
-    if (typeof node === 'string') return node;
-    if (Array.isArray(node)) return node.map(flatten).join('');
+  // With preserveOrder: true, nodes are arrays of objects
+  const flatten = (nodeArray: any): string => {
+    if (!nodeArray) return '';
+    if (typeof nodeArray === 'string') return nodeArray;
+    if (!Array.isArray(nodeArray)) {
+      // Fallback for non-array (shouldn't happen with preserveOrder: true)
+      if (typeof nodeArray === 'object' && nodeArray['#text']) {
+        return String(nodeArray['#text']);
+      }
+      return '';
+    }
+
     let out = '';
-    if (typeof node['#text'] === 'string') out += node['#text'];
-
-    // Handle placeholder elements
-    if (node.ph) {
-      const phs = Array.isArray(node.ph) ? node.ph : [node.ph];
-      for (const ph of phs) {
-        const id = ph.id;
-        out += `[[ph:${id}]]`;
+    for (const node of nodeArray) {
+      // Text node
+      if (node['#text'] !== undefined) {
+        out += String(node['#text']);
+        continue;
       }
-    }
 
-    // Handle XLIFF 2.1 inline elements
-    if (node.pc) {
-      const pcs = Array.isArray(node.pc) ? node.pc : [node.pc];
-      for (const pc of pcs) {
-        const dataRef = pc.dataRef || pc['dataRef'] || '';
-        const tagName = dataRef.replace(/^html_/, '') || 'span';
-        const innerText = flatten(pc);
-        out += `<${tagName}>${innerText}</${tagName}>`;
+      // Placeholder element
+      if (node.ph) {
+        const phArray = node.ph;
+        const attrs = node[':@'] || {};
+        const id = attrs['@_id'] || attrs.id;
+        if (id) out += `[[ph:${id}]]`;
+        continue;
       }
-    }
-    if (node.sc || node.ec) {
-      // Start/end codes - for now just preserve the markers
-      if (node.sc) out += flatten(node.sc);
-      if (node.ec) out += flatten(node.ec);
-    }
 
-    // Handle XLIFF 1.2 inline elements
-    if (node.g) {
-      const gs = Array.isArray(node.g) ? node.g : [node.g];
-      for (const g of gs) {
-        const ctype = g.ctype || g['ctype'] || '';
+      // XLIFF 2.1 pc element
+      if (node.pc) {
+        const pcArray = node.pc;
+        const attrs = node[':@'] || {};
+        const dataRef = attrs['@_dataRef'] || attrs.dataRef || '';
+        const equivStart = attrs['@_equivStart'] || attrs.equivStart;
+        const equivEnd = attrs['@_equivEnd'] || attrs.equivEnd;
+        
+        const innerText = flatten(pcArray);
+        
+        // If equivStart/equivEnd are present, use them (they contain the original HTML with attributes)
+        if (equivStart && equivEnd) {
+          // Decode HTML entities
+          const openTag = equivStart.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+          const closeTag = equivEnd.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+          out += `${openTag}${innerText}${closeTag}`;
+        } else {
+          // Fallback: use dataRef to determine tag name
+          const tagName = dataRef.replace(/^html_/, '') || 'span';
+          out += `<${tagName}>${innerText}</${tagName}>`;
+        }
+        continue;
+      }
+
+      // XLIFF 1.2 g element
+      if (node.g) {
+        const gArray = node.g;
+        const attrs = node[':@'] || {};
+        const ctype = attrs['@_ctype'] || attrs.ctype || '';
         let tagName = 'span';
-        // Map ctype back to HTML tag
         if (ctype === 'bold') tagName = 'b';
         else if (ctype === 'italic') tagName = 'i';
         else if (ctype === 'underline') tagName = 'u';
@@ -252,54 +378,140 @@ export function parseXliffToUnits(xlf: string): TranslationUnit[] {
         else if (ctype === 'code') tagName = 'code';
         else if (ctype.startsWith('x-')) tagName = ctype.substring(2);
 
-        const innerText = flatten(g);
+        const innerText = flatten(gArray);
         out += `<${tagName}>${innerText}</${tagName}>`;
+        continue;
       }
-    }
 
-    if (node.bx || node.ex || node.bpt || node.ept) {
-      // Paired code markers - just include the content
+      // sc/ec elements
+      if (node.sc || node.ec) {
+        if (node.sc) out += flatten(node.sc);
+        if (node.ec) out += flatten(node.ec);
+        continue;
+      }
+
+      // bx/ex/bpt/ept elements
       if (node.bpt) {
-        const content = typeof node.bpt === 'string' ? node.bpt : (node.bpt['#text'] || '');
-        out += content; // bpt contains the opening tag like <b>
+        const bptArray = node.bpt;
+        for (const bptNode of bptArray) {
+          if (bptNode['#text']) {
+            out += bptNode['#text'];
+          }
+        }
+        continue;
       }
       if (node.ept) {
-        const content = typeof node.ept === 'string' ? node.ept : (node.ept['#text'] || '');
-        out += content; // ept contains the closing tag like </b>
+        const eptArray = node.ept;
+        for (const eptNode of eptArray) {
+          if (eptNode['#text']) {
+            out += eptNode['#text'];
+          }
+        }
+        continue;
       }
-    }
 
-    if (node.source) out += flatten(node.source);
-    if (node.target) out += flatten(node.target);
-    // gather any nested strings
-    for (const [k, v] of Object.entries(node)) {
-      if (k !== '#text' && k !== 'ph' && k !== 'pc' && k !== 'g' && k !== 'sc' && k !== 'ec' && k !== 'bx' && k !== 'ex' && k !== 'bpt' && k !== 'ept' && k !== 'source' && k !== 'target' && typeof v === 'string') out += v;
+      // source/target (recurse)
+      if (node.source) {
+        out += flatten(node.source);
+        continue;
+      }
+      if (node.target) {
+        out += flatten(node.target);
+        continue;
+      }
     }
     return out;
   };
 
   for (const f of files) {
-    const fileUnits = Array.isArray(f.unit) ? f.unit : [f.unit];
-    const fileTrg = (f.trgLang as string | undefined) || xliffTrg;
-    for (const u of fileUnits) {
-      const id: string = u.id;
-      // notes
+    // With preserveOrder: true, f is an array of objects
+    const fileArray = Array.isArray(f) ? f : [f];
+    let fileTrg = xliffTrg;
+    
+    // Extract file attributes
+    for (const item of fileArray) {
+      if (item[':@']) {
+        const attrs = item[':@'];
+        fileTrg = attrs['@_trgLang'] || attrs.trgLang || fileTrg;
+      }
+    }
+    
+    // Find unit elements - keep the parent item that has both 'unit' and ':@'
+    const unitItems: any[] = [];
+    for (const item of fileArray) {
+      if (item.unit) {
+        unitItems.push(item);
+      }
+    }
+    
+    for (const unitItem of unitItems) {
+      // unitItem is the object that contains both 'unit' array and ':@' attributes
+      if (!unitItem || typeof unitItem !== 'object') continue;
+      
+      // Extract unit attributes from the parent object
+      let id = '';
+      if (unitItem[':@']) {
+        const attrs = unitItem[':@'];
+        id = attrs['@_id'] || attrs.id || '';
+      }
+      
+      if (!id) continue;
+      
+      // Get the actual unit array
+      const unitArray = unitItem.unit;
+      if (!unitArray || !Array.isArray(unitArray)) continue;
+      
+      // Extract notes
       let sheetName = '', col = ''; let row = 0;
       let phMap: Record<string, Record<string, string>> | undefined;
       let htmlSkeleton: string | undefined;
       let htmlInlineMap: Record<string, { open: string; close: string }> | undefined;
       let htmlTexts: string[] | undefined;
-      if (u.notes) {
-        const { sheetName: sn, row: rr, col: cc, ph, htmlSkeleton: hs, htmlInlineMap: him, htmlTexts: htxt } = extractNotes(u);
-        sheetName = sn; row = rr; col = cc; phMap = ph; htmlSkeleton = hs; htmlInlineMap = him; htmlTexts = htxt;
+      
+      for (const item of unitArray) {
+        if (item.notes) {
+          const { sheetName: sn, row: rr, col: cc, ph, htmlSkeleton: hs, htmlInlineMap: him, htmlTexts: htxt } = extractNotes(item.notes);
+          if (sn) sheetName = sn;
+          if (rr) row = rr;
+          if (cc) col = cc;
+          if (ph) phMap = ph;
+          if (hs) htmlSkeleton = hs;
+          if (him) htmlInlineMap = him;
+          if (htxt) htmlTexts = htxt;
+        }
       }
 
-      const segsArr = Array.isArray(u.segment) ? u.segment : (u.segment ? [u.segment] : []);
-      const segments: Segment[] = segsArr.map((s: any, idx: number) => {
-        const src = flatten(s.source);
-        const tgt = s.target ? flatten(s.target) : undefined;
-        const sid = s.id || `${id}_s${idx}`;
-        return { id: sid, source: src, target: tgt };
+      // Extract segments
+      const segmentElements: any[] = [];
+      for (const item of unitArray) {
+        if (item.segment) {
+          segmentElements.push(item.segment);
+        }
+      }
+      
+      const segments: Segment[] = segmentElements.map((segArray: any, idx: number) => {
+        let segId = `${id}_s${idx}`;
+        let sourceArray: any = null;
+        let targetArray: any = null;
+        
+        if (Array.isArray(segArray)) {
+          for (const item of segArray) {
+            if (item[':@']) {
+              const attrs = item[':@'];
+              segId = attrs['@_id'] || attrs.id || segId;
+            }
+            if (item.source) {
+              sourceArray = item.source;
+            }
+            if (item.target) {
+              targetArray = item.target;
+            }
+          }
+        }
+        
+        const src = flatten(sourceArray);
+        const tgt = targetArray ? flatten(targetArray) : undefined;
+        return { id: segId, source: src, target: tgt };
       });
 
       const tu: TranslationUnit = { id, sheetName, row, col, colIndex: 0, source: segments.map(s => s.source).join(''), segments, meta: {} };

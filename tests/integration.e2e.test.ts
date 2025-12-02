@@ -22,6 +22,10 @@ function cfgWithSrx(tmpPath: string): Config {
   const cfg = parseConfig(cfgPath);
   // Ensure translateComments is on for test
   cfg.workbook.sheets[0].translateComments = true;
+  // Force source column to A for this test, regardless of what's in config.yml
+  cfg.workbook.sheets[0].sourceColumns = ['A'];
+  // Adjust target columns to match: B for fr (after A)
+  cfg.workbook.sheets[0].targetColumns = { fr: 'B' };
   return cfg;
 }
 

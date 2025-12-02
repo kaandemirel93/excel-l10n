@@ -234,8 +234,76 @@ export async function mergeWorkbook(
           let finalText = rebuiltSegments.join('');
           const htmlSkeleton = (tu.meta as any)?.htmlSkeleton as string | undefined;
           const htmlInlineMap = (tu.meta as any)?.htmlInlineMap as InlineMap | undefined;
+          
           if (htmlSkeleton) {
-            finalText = composeHtmlFromSkeleton(finalText, htmlSkeleton, htmlInlineMap);
+            // New approach: skeleton has [[CONTENT]] placeholder for the translated content
+            if (htmlSkeleton.includes('[[CONTENT]]')) {
+              // For XLIFF 2.1, the parser already restored full HTML tags with attributes using equivStart/equivEnd
+              // For XLIFF 1.2, we need to use the inlineMap to restore attributes
+              if (htmlInlineMap) {
+                // XLIFF 1.2: Replace simplified HTML tags with full tags from inlineMap
+                for (const [idStr, tags] of Object.entries(htmlInlineMap)) {
+                  if (!tags?.open || !tags?.close) continue;
+                  
+                  // Extract tag name from the full tag (e.g., "<a href='...'>" -> "a")
+                  const tagMatch = tags.open.match(/<(\w+)/);
+                  if (!tagMatch) continue;
+                  const tagName = tagMatch[1];
+                  
+                  // Replace simplified tags with full tags
+                  // Use a simple approach: replace first occurrence of <tagName> with full open tag
+                  // and first occurrence of </tagName> with full close tag
+                  const simpleOpen = `<${tagName}>`;
+                  const simpleClose = `</${tagName}>`;
+                  
+                  // Find and replace pairs
+                  let pos = 0;
+                  while (pos < finalText.length) {
+                    const openIdx = finalText.indexOf(simpleOpen, pos);
+                    if (openIdx === -1) break;
+                    
+                    // Find matching close tag
+                    let depth = 1;
+                    let searchPos = openIdx + simpleOpen.length;
+                    let closeIdx = -1;
+                    
+                    while (searchPos < finalText.length && depth > 0) {
+                      const nextOpen = finalText.indexOf(simpleOpen, searchPos);
+                      const nextClose = finalText.indexOf(simpleClose, searchPos);
+                      
+                      if (nextClose === -1) break;
+                      
+                      if (nextOpen !== -1 && nextOpen < nextClose) {
+                        depth++;
+                        searchPos = nextOpen + simpleOpen.length;
+                      } else {
+                        depth--;
+                        if (depth === 0) {
+                          closeIdx = nextClose;
+                          break;
+                        }
+                        searchPos = nextClose + simpleClose.length;
+                      }
+                    }
+                    
+                    if (closeIdx !== -1) {
+                      // Replace this pair
+                      finalText = finalText.substring(0, openIdx) + tags.open + 
+                                finalText.substring(openIdx + simpleOpen.length, closeIdx) + 
+                                tags.close + finalText.substring(closeIdx + simpleClose.length);
+                      pos = openIdx + tags.open.length;
+                    } else {
+                      pos = openIdx + simpleOpen.length;
+                    }
+                  }
+                }
+              }
+              // Replace [[CONTENT]] placeholder with the translated content
+              finalText = htmlSkeleton.replace(/\[\[CONTENT\]\]/g, finalText);
+            } else {
+              // Legacy approach: skeleton has [[htmltxt:N]], [[io:N]], [[ic:N]] markers
+              finalText = composeHtmlFromSkeleton(finalText, htmlSkeleton, htmlInlineMap);
+            }
           } else if ((tu.meta as any)?.htmlInlineMap && !(tu.meta as any)?.htmlSkeleton) {
             // Inline map without skeleton: expand placeholders globally
             for (const [n, t] of Object.entries((tu.meta as any).htmlInlineMap as InlineMap)) {
