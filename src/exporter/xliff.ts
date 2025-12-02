@@ -40,6 +40,46 @@ function encodePlaceholders(text: string, regs: RegExp[]): { encoded: string; ma
 function writeWithPh(parent: any, encoded: string) {
   const MARK = /(\[\[(ph|pc):[^\]]+\]\])/g;
   const parts = encoded.split('\u0000').join('');
+
+  // Check if the text already contains XLIFF inline elements (<pc>, <g>, etc.)
+  if (/<(pc|g|sc|ec|bx|ex|bpt|ept)\s/.test(parts)) {
+    // Parse and manually build inline XLIFF elements
+    const xmlPattern = /<(pc|g|sc|ec|bx|ex|bpt|ept)([^>]*)>(.*?)<\/(pc|g|sc|ec|bx|ex|bpt|ept)>|<(pc|g|sc|ec|bx|ex|bpt|ept)([^>]*)\/>/g;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = xmlPattern.exec(parts)) !== null) {
+      // Write any text before this element
+      const textBefore = parts.substring(lastIndex, match.index);
+      if (textBefore) parent.txt(textBefore);
+
+      if (match[1]) {
+        // Paired element like <pc ...>content</pc>
+        const tagName = match[1];
+        const attrs = match[2];
+        const innerContent = match[3];
+        const attrObj = parseAttributes(attrs);
+        const elem = parent.ele(tagName, attrObj);
+        // Recursively handle inner content
+        writeWithPh(elem, innerContent);
+      } else if (match[5]) {
+        // Self-closing element like <sc ... />
+        const tagName = match[5];
+        const attrs = match[6];
+        const attrObj = parseAttributes(attrs);
+        parent.ele(tagName, attrObj);
+      }
+
+      lastIndex = match.index + match[0].length;
+    }
+
+    // Write any remaining text
+    const textAfter = parts.substring(lastIndex);
+    if (textAfter) parent.txt(textAfter);
+    return;
+  }
+
+  // Otherwise, process placeholder markers
   for (const part of parts.split(MARK)) {
     if (!part) continue;
     const mph = /^\[\[ph:([^\]]+)\]\]$/.exec(part);
@@ -55,9 +95,22 @@ function writeWithPh(parent: any, encoded: string) {
   }
 }
 
+// Helper to parse XML attributes from a string
+function parseAttributes(attrString: string): Record<string, string> {
+  const attrs: Record<string, string> = {};
+  if (!attrString) return attrs;
+  const attrPattern = /(\w+)="([^"]*)"/g;
+  let match;
+  while ((match = attrPattern.exec(attrString)) !== null) {
+    attrs[match[1]] = match[2];
+  }
+  return attrs;
+}
+
 export async function exportToXliff(units: TranslationUnit[], config: Config, options?: { srcLang?: string; trgLang?: string; generator?: string }): Promise<string> {
   const srcLang = options?.srcLang ?? config.global?.srcLang ?? 'en';
-  const attrs: any = { version: '2.1', srcLang };
+  const xliffVersion = config.global?.xliffVersion || '2.1';
+  const attrs: any = { version: xliffVersion, srcLang };
   if (options?.trgLang) attrs.trgLang = options.trgLang;
   const root = create({ version: '1.0', encoding: 'UTF-8' }).ele('xliff', attrs);
   const file = root.ele('file', { id: 'workbook', original: 'workbook.xlsx', 'tool-id': options?.generator ?? 'excel-l10n' });
@@ -72,14 +125,7 @@ export async function exportToXliff(units: TranslationUnit[], config: Config, op
       if (u.meta?.metadataRows) notes.ele('note', { category: 'metadataRows' }).txt(JSON.stringify(u.meta.metadataRows));
       if (u.meta?.comments) notes.ele('note', { category: 'comments' }).txt(typeof u.meta.comments === 'string' ? u.meta.comments : JSON.stringify(u.meta.comments));
     }
-    if (u.meta && (u.meta as any).htmlSkeleton) {
-      notes.ele('note', { category: 'htmlSkeleton' }).txt(String((u.meta as any).htmlSkeleton));
-      if ((u.meta as any).htmlInlineMap) {
-        try {
-          notes.ele('note', { category: 'htmlInlineMap' }).txt(JSON.stringify((u.meta as any).htmlInlineMap));
-        } catch {}
-      }
-    }
+    // htmlSkeleton and htmlInlineMap are deprecated; XLIFF inline elements are now in source text directly
 
     const segs = u.segments && u.segments.length ? u.segments : [{ id: `${u.id}_s0`, source: u.source } as Segment];
     // collect placeholder map for this unit
@@ -159,13 +205,15 @@ export function parseXliffToUnits(xlf: string): TranslationUnit[] {
   const files = Array.isArray(xliff.file) ? xliff.file : [xliff.file];
   const xliffTrg = xliff.trgLang as string | undefined;
 
-  // Flatten text with <ph id> markers recursively
+  // Flatten text with <ph id> and XLIFF inline elements recursively
   const flatten = (node: any): string => {
     if (node == null) return '';
     if (typeof node === 'string') return node;
     if (Array.isArray(node)) return node.map(flatten).join('');
     let out = '';
     if (typeof node['#text'] === 'string') out += node['#text'];
+
+    // Handle placeholder elements
     if (node.ph) {
       const phs = Array.isArray(node.ph) ? node.ph : [node.ph];
       for (const ph of phs) {
@@ -173,12 +221,59 @@ export function parseXliffToUnits(xlf: string): TranslationUnit[] {
         out += `[[ph:${id}]]`;
       }
     }
-    if (node.pc) out += flatten(node.pc);
+
+    // Handle XLIFF 2.1 inline elements
+    if (node.pc) {
+      const pcs = Array.isArray(node.pc) ? node.pc : [node.pc];
+      for (const pc of pcs) {
+        const dataRef = pc.dataRef || pc['dataRef'] || '';
+        const tagName = dataRef.replace(/^html_/, '') || 'span';
+        const innerText = flatten(pc);
+        out += `<${tagName}>${innerText}</${tagName}>`;
+      }
+    }
+    if (node.sc || node.ec) {
+      // Start/end codes - for now just preserve the markers
+      if (node.sc) out += flatten(node.sc);
+      if (node.ec) out += flatten(node.ec);
+    }
+
+    // Handle XLIFF 1.2 inline elements
+    if (node.g) {
+      const gs = Array.isArray(node.g) ? node.g : [node.g];
+      for (const g of gs) {
+        const ctype = g.ctype || g['ctype'] || '';
+        let tagName = 'span';
+        // Map ctype back to HTML tag
+        if (ctype === 'bold') tagName = 'b';
+        else if (ctype === 'italic') tagName = 'i';
+        else if (ctype === 'underline') tagName = 'u';
+        else if (ctype === 'link') tagName = 'a';
+        else if (ctype === 'code') tagName = 'code';
+        else if (ctype.startsWith('x-')) tagName = ctype.substring(2);
+
+        const innerText = flatten(g);
+        out += `<${tagName}>${innerText}</${tagName}>`;
+      }
+    }
+
+    if (node.bx || node.ex || node.bpt || node.ept) {
+      // Paired code markers - just include the content
+      if (node.bpt) {
+        const content = typeof node.bpt === 'string' ? node.bpt : (node.bpt['#text'] || '');
+        out += content; // bpt contains the opening tag like <b>
+      }
+      if (node.ept) {
+        const content = typeof node.ept === 'string' ? node.ept : (node.ept['#text'] || '');
+        out += content; // ept contains the closing tag like </b>
+      }
+    }
+
     if (node.source) out += flatten(node.source);
     if (node.target) out += flatten(node.target);
     // gather any nested strings
     for (const [k, v] of Object.entries(node)) {
-      if (k !== '#text' && k !== 'ph' && k !== 'source' && k !== 'target' && typeof v === 'string') out += v;
+      if (k !== '#text' && k !== 'ph' && k !== 'pc' && k !== 'g' && k !== 'sc' && k !== 'ec' && k !== 'bx' && k !== 'ex' && k !== 'bpt' && k !== 'ept' && k !== 'source' && k !== 'target' && typeof v === 'string') out += v;
     }
     return out;
   };

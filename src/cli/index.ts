@@ -21,6 +21,7 @@ program.command('extract')
   .option('--src-lang <lang>', 'Source language')
   .option('--target-lang <lang>', 'Target language for XLIFF; if omitted and multiple targets exist, use --per-locale')
   .option('--per-locale', 'For XLIFF, emit one file per target locale (suffix: .<locale>.xlf)', false)
+  .option('--xliff-version <version>', 'XLIFF version: 1.2|2.1 (default: 2.1)', '2.1')
   .option('--stream', 'Experimental: stream extraction for very large files', false)
   // quick inline overrides / minimal config
   .option('--sheet <name>', 'Sheet name or regex')
@@ -43,7 +44,7 @@ program.command('extract')
         if (lc && col) targetColumns[lc.trim()] = col.trim();
       });
       cfg = {
-        global: { srcLang: opts.srcLang, overwrite: true, insertTargetPlacement: 'insertAfterSource' },
+        global: { srcLang: opts.srcLang, overwrite: true, insertTargetPlacement: 'insertAfterSource', xliffVersion: (opts.xliffVersion === '1.2' ? '1.2' : '2.1') as '1.2' | '2.1' },
         segmentation: { enabled: true, rules: 'builtin' },
         workbook: {
           sheets: [
@@ -65,6 +66,12 @@ program.command('extract')
           ],
         },
       };
+    }
+    // Apply CLI xliffVersion override if provided
+    if (opts.xliffVersion && cfg.global) {
+      cfg.global.xliffVersion = (opts.xliffVersion === '1.2' ? '1.2' : '2.1') as '1.2' | '2.1';
+    } else if (opts.xliffVersion && !cfg.global) {
+      cfg.global = { xliffVersion: (opts.xliffVersion === '1.2' ? '1.2' : '2.1') as '1.2' | '2.1' };
     }
     // Stream mode: write XLIFF progressively directly to file to avoid buffering
     if (opts.stream) {

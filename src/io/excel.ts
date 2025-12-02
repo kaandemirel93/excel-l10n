@@ -9,16 +9,16 @@ function looksHtml(s: string): boolean {
 }
 
 // Build an HTML skeleton with placeholders for text nodes and inline tags
-export async function htmlToSkeleton(html: string, opts?: { translatableTags?: string[] }): Promise<{ 
-  skeleton: string; 
-  texts: string[]; 
-  inlineMap: Record<number, { open: string; close: string }> 
+export async function htmlToSkeleton(html: string, opts?: { translatableTags?: string[] }): Promise<{
+  skeleton: string;
+  texts: string[];
+  inlineMap: Record<number, { open: string; close: string }>
 }> {
   const { parse } = await import('node-html-parser');
   const root = parse(String(html), { lowerCaseTagName: false });
   const texts: string[] = [];
   const inlineMap: Record<number, { open: string; close: string }> = {};
-  const defaultInline = ['b','strong','i','em','u','span','small','sub','sup','mark','a','code'];
+  const defaultInline = ['b', 'strong', 'i', 'em', 'u', 'span', 'small', 'sub', 'sup', 'mark', 'a', 'code'];
   const configured = (opts?.translatableTags || []).map(t => String(t).toLowerCase());
   const inlineTags = new Set<string>([...defaultInline, ...configured]);
   let textIdx = 1;
@@ -28,7 +28,7 @@ export async function htmlToSkeleton(html: string, opts?: { translatableTags?: s
   // First pass: Extract text nodes and replace them with [[htmltxt:N]]
   function extractTextNodes(node: any) {
     if (!node) return;
-    
+
     if (node.nodeType === 3) { // text node
       const content = String(node.rawText ?? '');
       // Ignore pure-whitespace nodes; otherwise preserve whitespace inside tokens
@@ -39,7 +39,7 @@ export async function htmlToSkeleton(html: string, opts?: { translatableTags?: s
       }
       return;
     }
-    
+
     // Process children
     if (node.childNodes) {
       for (const child of node.childNodes) {
@@ -100,15 +100,99 @@ export async function htmlToSkeleton(html: string, opts?: { translatableTags?: s
   return { skeleton, texts, inlineMap };
 }
 
+// Convert HTML to XLIFF inline elements (XLIFF 2.1 <pc> or XLIFF 1.2 <g>)
+export async function htmlToXliffInline(html: string, opts?: { translatableTags?: string[]; xliffVersion?: '1.2' | '2.1' }): Promise<string> {
+  const { parse } = await import('node-html-parser');
+  const root = parse(String(html), { lowerCaseTagName: false });
+  const defaultInline = ['b', 'strong', 'i', 'em', 'u', 'span', 'small', 'sub', 'sup', 'mark', 'a', 'code'];
+  const configured = (opts?.translatableTags || []).map(t => String(t).toLowerCase());
+  const inlineTags = new Set<string>([...defaultInline, ...configured]);
+  const version = opts?.xliffVersion || '2.1';
+  let inlineIdCounter = 1;
+
+  // Map HTML tag names to XLIFF ctype values for XLIFF 1.2
+  const ctypeMap: Record<string, string> = {
+    'b': 'bold',
+    'strong': 'bold',
+    'i': 'italic',
+    'em': 'italic',
+    'u': 'underline',
+    'a': 'link',
+    'code': 'code',
+    'span': 'x-span',
+    'small': 'x-small',
+    'sub': 'x-sub',
+    'sup': 'x-sup',
+    'mark': 'x-mark',
+  };
+
+  function processNode(node: any): string {
+    if (!node) return '';
+
+    // Text node
+    if (node.nodeType === 3) {
+      const text = String(node.rawText ?? '');
+      // Escape XML special characters
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    // Element node
+    if (node.nodeType === 1) {
+      const tag = String(node.tagName || '').toLowerCase();
+
+      // Process inline tags as XLIFF inline elements
+      if (inlineTags.has(tag)) {
+        const id = inlineIdCounter++;
+        let innerContent = '';
+        if (node.childNodes) {
+          for (const child of node.childNodes) {
+            innerContent += processNode(child);
+          }
+        }
+
+        if (version === '2.1') {
+          // XLIFF 2.1: use <pc> elements with dataRef
+          const dataRef = tag;
+          return `<pc id="${id}" dataRef="html_${dataRef}">${innerContent}</pc>`;
+        } else {
+          // XLIFF 1.2: use <g> elements with ctype
+          const ctype = ctypeMap[tag] || `x-${tag}`;
+          return `<g id="${id}" ctype="${ctype}">${innerContent}</g>`;
+        }
+      }
+
+      // Block-level tags: strip them but keep content
+      let out = '';
+      if (node.childNodes) {
+        for (const child of node.childNodes) {
+          out += processNode(child);
+        }
+      }
+      return out;
+    }
+
+    // Other node types: recurse through children
+    let out = '';
+    if (node.childNodes) {
+      for (const child of node.childNodes) {
+        out += processNode(child);
+      }
+    }
+    return out;
+  }
+
+  return processNode(root);
+}
+
 function htmlToText(html: string, opts?: { translatableTags?: string[] }): string {
   let s = String(html);
   // Remove script/style contents entirely
   s = s.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-       .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '');
+    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, '');
   // Convert common line-break tags to newlines
   s = s.replace(/<\s*br\s*\/?\s*>/gi, '\n');
   // Insert newlines after block-level closings to preserve structure
-  const blockTags = ['p','div','li','ul','ol','section','article','header','footer','h1','h2','h3','h4','h5','h6','title'];
+  const blockTags = ['p', 'div', 'li', 'ul', 'ol', 'section', 'article', 'header', 'footer', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'title'];
   for (const t of blockTags) {
     const re = new RegExp(`<\\/${t}\\s*>`, 'gi');
     s = s.replace(re, '\n');
@@ -117,10 +201,10 @@ function htmlToText(html: string, opts?: { translatableTags?: string[] }): strin
   s = s.replace(/<[^>]+>/g, '');
   // Collapse excessive spaces while preserving newlines
   s = s.replace(/[\t\r]+/g, '')
-       .replace(/\u00A0/g, ' ')
-       .replace(/ +/g, ' ')
-       .replace(/\n{3,}/g, '\n\n')
-       .trim();
+    .replace(/\u00A0/g, ' ')
+    .replace(/ +/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   return s;
 }
 
@@ -226,29 +310,15 @@ export async function extractUnits(inputXlsxPath: string, config: Config): Promi
             htmlDetected = true;
             const originalHtml = text;
             const transTags = (sheetCfg as any).html?.translatableTags as string[] | undefined;
+            const xliffVersion = config.global?.xliffVersion || '2.1';
 
-            let res = await htmlToSkeleton(originalHtml, { translatableTags: transTags });
-            if (!res.texts || res.texts.length === 0) {
-              res = await htmlToSkeleton(originalHtml, undefined);
-            }
-
-            // Build translator-facing text FROM THE SKELETON:
-            // 1) fill [[htmltxt:N]] with the corresponding res.texts[N-1]
-            // 2) strip real HTML tags, but keep our [[io]] / [[ic]] markers
-            const filled = res.skeleton.replace(/\[\[htmltxt:(\d+)\]\]/g, (_m, g1) => {
-              const i = (parseInt(g1, 10) - 1) | 0;
-              return res.texts[i] ?? '';
+            // Convert HTML to XLIFF inline elements directly
+            text = await htmlToXliffInline(originalHtml, {
+              translatableTags: transTags,
+              xliffVersion
             });
-            const translatorSource = filled.replace(/<[^>]+>/g, '');
 
-            text = translatorSource;
-            meta.htmlSkeleton = res.skeleton;
-            if (Object.keys(res.inlineMap || {}).length) {
-              meta.htmlInlineMap = res.inlineMap;
-            }
-            if (res.texts && res.texts.length) {
-              meta.htmlTexts = res.texts;
-            }
+            // Store original HTML for reference
             meta.htmlOriginal = originalHtml;
           }
 
@@ -312,7 +382,7 @@ export async function extractUnits(inputXlsxPath: string, config: Config): Promi
               target: ''
             }]
           };
-          
+
           // Do not override segments for HTML; keep plain concatenated text for translators
           units.push(tu);
         }

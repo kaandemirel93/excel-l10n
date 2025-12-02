@@ -14,6 +14,9 @@ npm run build
 # extract to XLIFF (uses SRX if enabled in config)
 dist/cli/index.js extract -c examples/config.yml -i examples/sample.xlsx -o out.xlf --src-lang en
 
+# extract to XLIFF 1.2 (default is 2.1)
+dist/cli/index.js extract -c examples/config.yml -i examples/sample.xlsx -o out.xlf --src-lang en --xliff-version 1.2
+
 # merge translated file
 dist/cli/index.js merge -c examples/config.yml -i examples/sample.xlsx -t out.translated.xlf -o examples/sample.translated.xlsx
 ```
@@ -79,12 +82,28 @@ await merge('examples/sample.xlsx', 'examples/sample.translated.xlsx', translate
 - If no matching rule is found for the locale, a pragmatic built-in sentence splitter is used.
 - The locale is derived from `sheet.sourceLocale` or `global.srcLang`.
 
+## XLIFF version selection
+
+- Set `global.xliffVersion` to `"1.2"` or `"2.1"` (default: `"2.1"`) to control XLIFF output format.
+- Use CLI flag `--xliff-version 1.2` to override the config.
+- XLIFF 2.1 uses `<pc>` elements for inline codes.
+- XLIFF 1.2 uses `<g>` elements for inline codes.
+- Both versions are fully compatible with popular Translation Management Systems.
+
 ## Placeholders and inline codes
 
 - Configure `inlineCodeRegexes` per sheet to detect non-translatable tokens (e.g., `{0}`, `%s`).
 - XLIFF export converts tokens to `<ph id="..."/>` with a per-segment placeholder map preserved in a `<note category="ph">` JSON payload for roundtrip.
 - JSON export preserves a placeholder map under `unit.meta.placeholders` without altering source text.
 - During merge, placeholder markers (e.g., `[[ph:ph1]]` in translated content) are rehydrated back into original tokens.
+
+## HTML inline tags
+
+- When HTML content is detected in cells (e.g., `<div>This is <b>bold</b> text</div>`), inline tags are converted to XLIFF inline elements.
+- **XLIFF 2.1**: HTML tags like `<b>bold</b>` become `<pc id="1" dataRef="html_b">bold</pc>`
+- **XLIFF 1.2**: HTML tags like `<b>bold</b>` become `<g id="1" ctype="bold">bold</g>`
+- Inline elements are properly recognized and protected by Translation Management Systems.
+- During merge, XLIFF inline elements are converted back to their original HTML tags.
 
 ## XLIFF notes
 
@@ -115,6 +134,7 @@ Rich text run-level formatting is not preserved in the MVP; this can be extended
 - Comments via `translateComments`.
 - Notes export via `global.exportComments`.
 - Merge fallback via `global.mergeFallback` (default: `source`). When a segment lacks a `<target>`, choose to use its `<source>` or leave it empty (`empty`).
+- XLIFF version via `global.xliffVersion` (default: `2.1`). Choose between XLIFF 1.2 and 2.1 output formats.
 
 ### Example CLI flows
 

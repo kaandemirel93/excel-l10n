@@ -71,6 +71,7 @@ export type GlobalConfig = {
   targetLocale?: string; // used during merge when not derived from units
   exportComments?: boolean; // include comments/header/metadata in XLIFF notes
   mergeFallback?: 'source' | 'empty'; // when a segment target is missing: use source or leave empty
+  xliffVersion?: '1.2' | '2.1'; // XLIFF version for export, default 2.1
 };
 
 export type Config = { workbook: WorkbookConfig; segmentation?: SegConfig; global?: GlobalConfig };

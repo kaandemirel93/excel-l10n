@@ -1,6 +1,6 @@
 {
   "name": "excel-l10n",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Configurable Excel (XLSX) extraction → segmentation → XLIFF/JSON export → merge tool for modern JS workflows",
   "license": "Polyform Noncommercial 1.0.0",
   "author": "Kaan Demirel <kaandemirel@yahoo.com>",
